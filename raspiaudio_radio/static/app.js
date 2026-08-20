@@ -65,8 +65,7 @@ function setError(message = "") {
 }
 
 function sourceModeLabel(mode) {
-  if (mode === "fmhd") return "FM / HD";
-  if (mode === "amhd") return "AM / HD";
+  if (mode === "fmhd") return "FM";
   if (mode === "dab") return "DAB";
   return String(mode || "radio").toUpperCase();
 }
@@ -308,14 +307,65 @@ function formatTimestamp(value) {
 function updateDabMedia(status) {
   const media = status.dab_media || {};
   const current = status.current_station || {};
-  const source = media.source || (status.mode === "dab" ? "dab" : current.hd_available ? "hd" : "none");
+  const rds = (status.signal || {}).rds || {};
+  const isFm = String(status.mode_label || status.mode || "").toLowerCase().includes("fm");
+  const source = isFm ? "rds" : (media.source || (status.mode === "dab" ? "dab" : current.hd_available ? "hd" : "none"));
   const isDab = source === "dab";
   const isHd = source === "hd";
-  const isActive = isDab || isHd;
-  const sourceLabel = isHd ? "HD Radio" : isDab ? "DAB" : "Radio";
-  const hasText = Boolean(media.text || media.artist || media.title || media.station_name);
+  const isRds = source === "rds";
+  const isActive = isDab || isHd || isRds;
+  const sourceLabel = isHd ? "HD Radio" : isDab ? "DAB" : isRds ? "RDS" : "Radio";
+  const hasText = Boolean(media.text || media.artist || media.title || media.station_name) || Boolean(isRds && rds.rt);
   const hasArtwork = Boolean(media.artwork_url);
   const mediaTimestamp = media.artwork_updated_at || media.updated_at;
+
+  document.body.classList.toggle("fm-mode", isFm);
+  const manualTuneRow = document.getElementById("manualTuneRow");
+  if (manualTuneRow) manualTuneRow.style.display = isFm ? "" : "none";
+
+  const piEl = document.getElementById("mediaPi");
+  if (piEl) piEl.textContent = isRds
+    ? (rds.pi || 0).toString(16).toUpperCase().padStart(4, "0")
+    : "\u2014";
+
+  const lineArtist = document.getElementById("mediaLineArtist");
+  const lineTitle = document.getElementById("mediaLineTitle");
+  const linePi = document.getElementById("mediaLinePi");
+
+  const linePty = document.getElementById("mediaLinePty");
+  const labelText = document.getElementById("mediaLabelText");
+  const labelPi = document.getElementById("mediaLabelPi");
+
+  if (isRds) {
+    if (lineArtist) lineArtist.style.display = "none";
+    if (lineTitle) lineTitle.style.display = "none";
+    if (linePi) linePi.style.display = "";
+    if (linePty) linePty.style.display = "";
+    if (labelText) labelText.textContent = "RT";
+    if (labelPi) labelPi.textContent = "PI";
+    document.getElementById("mediaText").textContent = rds.rt || "No RDS RadioText received.";
+    document.getElementById("mediaPty").textContent = rds.pty_name
+      ? rds.pty + " \u2014 " + rds.pty_name
+      : "\u2014";
+    document.getElementById("mediaUpdated").textContent = rds.updated_at
+      ? "RDS updated: " + new Date(rds.updated_at * 1000).toLocaleTimeString()
+      : "No RDS metadata.";
+    document.getElementById("mediaHint").textContent = "Live RDS RadioText from the FM station.";
+    document.getElementById("mediaStatus").textContent = rds.rt ? "RDS text" : "RDS";
+    const artwork = document.getElementById("mediaArtwork");
+    const fallback = document.getElementById("mediaArtworkFallback");
+    artwork.hidden = true;
+    artwork.removeAttribute("src");
+    fallback.hidden = false;
+    fallback.textContent = rds.ps || current.label || "DAB";
+    return;
+  }
+  if (lineArtist) lineArtist.style.display = "";
+  if (lineTitle) lineTitle.style.display = "";
+  if (linePi) linePi.style.display = "none";
+  if (linePty) linePty.style.display = "none";
+  if (labelText) labelText.textContent = "Live text";
+  if (labelPi) labelPi.textContent = "RDS PI";
 
   document.getElementById("mediaArtist").textContent =
     media.artist || media.station_name || (isActive ? "No artist yet" : "Metadata inactive");
@@ -355,7 +405,8 @@ function updateDabMedia(status) {
     artwork.hidden = true;
     artwork.removeAttribute("src");
     fallback.hidden = false;
-    fallback.textContent = (media.program || (isHd ? "HD" : current.label || "DAB")).slice(0, 4).toUpperCase();
+    const rdsPs = ((status.signal || {}).rds || {}).ps || "";
+    fallback.textContent = rdsPs || media.program || current.label || "DAB";
   }
 }
 
@@ -753,6 +804,16 @@ function renderRecordings() {
     link.href = recording.url;
     const player = node.querySelector(".recording-player");
     player.src = recording.url;
+    const delBtn = node.querySelector(".recording-delete");
+    delBtn.addEventListener("click", async () => {
+      if (!window.confirm("Delete this recording?")) return;
+      try {
+        await api(`/api/recordings/${encodeURIComponent(recording.file_name)}`, { method: "DELETE" });
+        await refreshRecordings();
+      } catch (err) {
+        setError(String(err));
+      }
+    });
     list.appendChild(node);
   });
 }
@@ -1250,6 +1311,29 @@ function wireEvents() {
   document.getElementById("stationSearch").addEventListener("input", (event) => {
     state.filter = event.target.value || "";
     renderStations();
+  });
+  const manualTuneInput = document.getElementById("manualTuneInput");
+  const manualTuneButton = document.getElementById("manualTuneButton");
+  const doManualTune = async () => {
+    const value = parseFloat(manualTuneInput ? manualTuneInput.value : "");
+    if (!Number.isFinite(value) || value < 87.5 || value > 108) {
+      setError("Enter an FM frequency between 87.5 and 108 MHz.");
+      return;
+    }
+    if (manualTuneButton) setBusy(manualTuneButton, true);
+    try {
+      await api("/api/tune", { method: "POST", body: JSON.stringify({ frequency_mhz: value }) });
+      setError("");
+      await refreshStatus();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      if (manualTuneButton) setBusy(manualTuneButton, false);
+    }
+  };
+  if (manualTuneButton) manualTuneButton.addEventListener("click", doManualTune);
+  if (manualTuneInput) manualTuneInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") doManualTune();
   });
   document.querySelectorAll(".mode-card").forEach((button) => {
     button.addEventListener("click", () => setMode(button.dataset.mode));

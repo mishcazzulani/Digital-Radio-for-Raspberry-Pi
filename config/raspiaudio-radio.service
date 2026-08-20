@@ -1,0 +1,15 @@
+[Unit]
+Description=Digital Radio web service (DAB/FM, Si4689)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=/usr/bin/python3 radio.py serve --port __PORT__ --rst-pin __RST_PIN__ --i2s-master --record-device __RECORD_DEVICE__ --record-format __RECORD_FORMAT__
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

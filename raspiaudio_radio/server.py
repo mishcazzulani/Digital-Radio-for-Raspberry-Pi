@@ -168,6 +168,9 @@ class RadioRequestHandler(BaseHTTPRequestHandler):
                     )
                 )
                 return
+            if parsed.path == "/api/tune":
+                self._send_ok(self.server.backend.tune_fm(body.get("frequency_mhz")))
+                return
             if parsed.path == "/api/volume":
                 self._send_ok(self.server.backend.set_volume(level=body.get("level"), delta=body.get("delta")))
                 return
@@ -275,14 +278,26 @@ class RadioRequestHandler(BaseHTTPRequestHandler):
             return
         self._serve_file(file_path, send_body=send_body)
 
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        try:
+            if parsed.path.startswith("/api/recordings/"):
+                file_name = Path(unquote(parsed.path[len("/api/recordings/") :])).name
+                self._send_ok(self.server.backend.delete_recording(file_name))
+                return
+            self._send_error_json(404, "Not found.")
+        except Exception as exc:  # noqa: BLE001
+            self._send_error_json(500, str(exc))
+
     def _serve_recording(self, request_path: str, send_body: bool = True) -> None:
         file_name = Path(unquote(request_path[len("/recordings/") :])).name
         backend = self.server.backend
         file_path = backend.config.recordings_dir / file_name
-        if not file_path.exists() or file_path.suffix.lower() != ".wav":
+        if not file_path.exists() or file_path.suffix.lower() not in (".wav", ".mp3"):
             self._send_error_json(404, "Recording not found.", send_body=send_body)
             return
-        self._serve_file(file_path, cache_control="no-store", allow_ranges=True, send_body=send_body)
+        ctype = "audio/mpeg" if file_path.suffix.lower() == ".mp3" else None
+        self._serve_file(file_path, cache_control="no-store", allow_ranges=True, send_body=send_body, content_type=ctype)
 
     def _serve_dab_artwork(self, send_body: bool = True) -> None:
         artwork = self.server.backend.get_dab_artwork()

@@ -70,6 +70,7 @@ CMD_READ_OFFSET = 0x10
 CMD_FM_TUNE_FREQ = 0x30
 CMD_FM_SEEK_START = 0x31
 CMD_FM_RSQ_STATUS = 0x32
+CMD_FM_RDS_STATUS = 0x34
 CMD_AM_TUNE_FREQ = 0x40
 CMD_AM_SEEK_START = 0x41
 CMD_AM_RSQ_STATUS = 0x42
@@ -1092,6 +1093,37 @@ class Si468xDabRadio:
             "mult": reply[11] if len(reply) > 11 else 0,
             "hdlevel": reply[15] if len(reply) > 15 else 0,
             "filtered_hdlevel": reply[16] if len(reply) > 16 else 0,
+        }
+
+    def fm_rds_status(self, status_only: bool = False, intack: bool = True) -> Dict[str, Any]:
+        """Read one RDS group from the chip FIFO.
+
+        Reply offsets (kernel driver si468x-cmd.c FM_RDS_STATUS):
+        reply[4] flags (bit0 rdsfifoint), reply[5] (bit1 rdssync),
+        reply[8..9] PI LE16, reply[10] fifo_used,
+        reply[12..19] RDS blocks A/B/C/D (lsb, msb each).
+        """
+        flags = (0x04 if status_only else 0x00) | (0x01 if intack else 0x00)
+        self._write_command([CMD_FM_RDS_STATUS, flags])
+        reply = self._read_reply(20)
+        bler = reply[11]
+        return {
+            "rds_ready": bool(reply[4] & 0x01),
+            "rds_sync": bool(reply[5] & 0x02),
+            "pi": reply[8] | (reply[9] << 8),
+            "fifo_used": reply[10],
+            "blocks": {
+                "a": reply[12] | (reply[13] << 8),
+                "b": reply[14] | (reply[15] << 8),
+                "c": reply[16] | (reply[17] << 8),
+                "d": reply[18] | (reply[19] << 8),
+                "bler": {
+                    "a": (bler >> 6) & 0x03,
+                    "b": (bler >> 4) & 0x03,
+                    "c": (bler >> 2) & 0x03,
+                    "d": bler & 0x03,
+                },
+            },
         }
 
     def am_tune(

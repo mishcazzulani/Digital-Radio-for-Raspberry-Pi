@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from legacy.rds import RdsDecoder
 from legacy.dab_radio_i2c_safe2 import (
     DAB_BAND_III,
     FLASH_ADDR_DAB,
@@ -56,10 +57,9 @@ else:
 
 MODE_DEFS: Dict[str, Dict[str, Any]] = {
     "dab": {"id": "dab", "label": "DAB", "band": "dab", "firmware": "dab", "scan_key": "dab", "tune_mode": None},
-    "fmhd": {"id": "fmhd", "label": "FM / HD Radio", "band": "fm", "firmware": "fmhd", "scan_key": "fm", "tune_mode": 0},
-    "amhd": {"id": "amhd", "label": "AM / AM HD", "band": "am", "firmware": "amhd", "scan_key": "am", "tune_mode": 0},
+    "fmhd": {"id": "fmhd", "label": "FM", "band": "fm", "firmware": "fmhd", "scan_key": "fm", "tune_mode": 0},
 }
-PUBLIC_MODE_KEYS = ("dab", "fmhd", "amhd")
+PUBLIC_MODE_KEYS = ("dab", "fmhd")
 MODE_ALIASES = {
     "fm": "fmhd",
     "hd": "fmhd",
@@ -508,6 +508,12 @@ def _resolve_shared_capture_device(device: str) -> str:
     if configured in named_devices and configured.startswith("dsnoop:"):
         return configured
 
+    # ugreen fix: an explicitly configured device (e.g. hw:1,0) must be
+    # used as-is. The auto-generated dsnoop:CARD=si4689i2s forces S32_LE,
+    # which delivers no data on the uGreen board; hw:1,0 + S16_LE works.
+    if configured and configured != "auto":
+        return configured
+
     card_name = _extract_alsa_card_name(configured)
     if card_name:
         prefix = f"dsnoop:CARD={card_name},DEV="
@@ -558,13 +564,30 @@ def _trim_wav_leading_seconds(file_path: Path, trim_seconds: float) -> float:
             if trim_frames <= 0 or total_frames <= trim_frames:
                 return 0.0
             source.setpos(trim_frames)
-            remaining = source.readframes(total_frames - trim_frames)
+            remaining_frames = total_frames - trim_frames
+            # While arecord is still writing, the RIFF size is the streaming
+            # placeholder (huge) -> bogus frame count; skip the trim.
+            if total_frames > rate * 86400:
+                return 0.0
     except (wave.Error, OSError):
         return 0.0
     temp_path = file_path.with_suffix(file_path.suffix + ".tmp")
-    with wave.open(str(temp_path), "wb") as target:
-        target.setparams(params)
-        target.writeframes(remaining)
+    try:
+        with wave.open(str(temp_path), "wb") as target:
+            target.setparams(params)
+            # stream in chunks instead of loading the whole file in RAM
+            with wave.open(str(file_path), "rb") as source:
+                source.setpos(trim_frames)
+                chunk_frames = 262144
+                while remaining_frames > 0:
+                    n = min(chunk_frames, remaining_frames)
+                    data = source.readframes(n)
+                    if not data:
+                        break
+                    target.writeframes(data)
+                    remaining_frames -= n
+    except (wave.Error, OSError):
+        return 0.0
     temp_path.replace(file_path)
     return round(trim_frames / rate, 1)
 
@@ -641,6 +664,7 @@ class RadioConfig:
     record_device: str = "auto"
     record_channels: int = 2
     record_format: str = "S16_LE"
+    record_file_format: str = "wav"  # "wav" or "mp3"
     record_trim_leading_seconds: float = 3.0
     system_service_name: str = "raspiaudio-radio.service"
 
@@ -1062,6 +1086,7 @@ class OledStatusDisplay:
 
 class RadioBackend:
     def __init__(self, config: RadioConfig) -> None:
+        self._rds_decoder = RdsDecoder()
         self.config = config
         self._lock = threading.RLock()
         self._radio: Optional[Si468xDabRadio] = None
@@ -2122,7 +2147,7 @@ print(json.dumps({"changed": changed, "missing_added": missing, "backup": backup
             "recording": self._recording_payload_locked(),
             "live_stream": {
                 "supported": bool(i2s_setup["installed"]),
-                "path": "/audio/live.wav",
+                "path": "/audio/live.mp3",
                 "mp3_path": "/audio/live.mp3",
                 "ready": self._current_station is not None,
                 "station_path_template": "/audio/stations/{station_id}.mp3",
@@ -3018,9 +3043,7 @@ print(json.dumps({"changed": changed, "missing_added": missing, "backup": backup
         scan_key = self._scan_key()
         band = self._mode_info()["band"]
         if self._current_mode == "fmhd":
-            return self._scan_fmhd_combined_locked()
-        if self._current_mode == "amhd":
-            return self._scan_amhd_combined_locked()
+            return self._scan_fm_clusters_locked()
         require_hd = scan_key in {"hd", "am_hd"}
         if band == "fm" and not require_hd:
             return self._scan_fm_clusters_locked()
@@ -3554,11 +3577,14 @@ print(json.dumps({"changed": changed, "missing_added": missing, "backup": backup
             scan_key = "am_hd" if require_hd else "am"
         program_mask = self._normalized_hd_program_mask(signal) if hd_ready else 0
         program_id = self._normalized_hd_program_id(signal) if hd_ready else 0
+        rds_label = None
+        if band == "fm" and not require_hd:
+            rds_label = self._read_rds_ps_label_locked(radio, timeout_s=2.5)
         station = self._normalize_station(
             scan_key,
             {
                 "freq_khz": measured_freq,
-                "label": self._default_station_label(scan_key, measured_freq, program_mask, hd_ready, program_id),
+                "label": rds_label or self._default_station_label(scan_key, measured_freq, program_mask, hd_ready, program_id),
                 "analog_available": analog_ready,
                 "hd_available": hd_ready,
                 "program_mask": program_mask,
@@ -3567,6 +3593,31 @@ print(json.dumps({"changed": changed, "missing_added": missing, "backup": backup
         )
         station["score"] = _analog_score(signal)
         return station
+
+    def _read_rds_ps_label_locked(self, radio, *, timeout_s: float = 2.5) -> Optional[str]:
+        """Dwell on the current FM frequency and read the RDS PS string.
+
+        The Si468x reports PS pairs in transmission order (2 chars per 0A
+        group in block D); a fresh decoder accumulates the 8-char string.
+        The rotation of the string depends on where the capture started but
+        it stays recognisable (e.g. 'L102.5RT' for RTL 102.5). Returns None
+        when no usable PS is found within the dwell window.
+        """
+        try:
+            decoder = RdsDecoder()
+            deadline = time.monotonic() + timeout_s
+            while time.monotonic() < deadline:
+                status = radio.fm_rds_status(intack=True)
+                blocks = status.get("blocks") or {}
+                if status.get("pi"):
+                    decoder.feed(blocks, pi=status.get("pi"))
+                if not status.get("rds_ready"):
+                    time.sleep(0.02)
+            # full dwell: errored chars self-correct on later cycles
+            ps = decoder.ps.strip(" ")
+            return ps if len(ps) >= 3 else None
+        except Exception:
+            return None
 
     def _merge_fmhd_status(self, base: Dict[str, Any], hd: Dict[str, Any]) -> Dict[str, Any]:
         merged = dict(base)
@@ -3851,8 +3902,24 @@ print(json.dumps({"changed": changed, "missing_added": missing, "backup": backup
             signal["score"] = _dab_score(signal)
             return signal
         if station["band"] == "fm":
-            return self._merge_fmhd_status(radio.fm_rsq_status(attune=True), radio.hd_digrad_status())
+            signal = self._merge_fmhd_status(radio.fm_rsq_status(attune=True), radio.hd_digrad_status())
+            self._poll_rds_locked(radio)
+            signal["rds"] = self._rds_decoder.state()
+            return signal
         return self._merge_fmhd_status(radio.am_rsq_status(attune=True), radio.hd_digrad_status())
+
+    def _poll_rds_locked(self, radio, max_groups: int = 10) -> None:
+        """Drain a few RDS groups from the chip FIFO into the decoder."""
+        try:
+            for _ in range(max_groups):
+                st = radio.fm_rds_status(intack=True)
+                if st.get("pi") or st.get("rds_ready"):
+                    self._rds_decoder.feed(st["blocks"], pi=st.get("pi"))
+                fifo = int(st.get("fifo_used") or 0)
+                if not st.get("rds_ready") and fifo <= 1:
+                    break
+        except Exception:
+            pass
 
     def _recording_active_locked(self) -> bool:
         return self._recording_process is not None and self._recording_process.poll() is None
@@ -3900,7 +3967,8 @@ print(json.dumps({"changed": changed, "missing_added": missing, "backup": backup
         timestamp = datetime.now()
         station_label = self._current_station["label"]
         base_name = f"{timestamp.strftime('%Y%m%d-%H%M%S')}_{self._current_mode}_{_sanitize_filename(station_label)}"
-        audio_path = self.config.recordings_dir / f"{base_name}.wav"
+        file_ext = "mp3" if self.config.record_file_format == "mp3" else "wav"
+        audio_path = self.config.recordings_dir / f"{base_name}.{file_ext}"
         meta_path = self.config.recordings_dir / f"{base_name}.json"
         meta = {
             "file_name": audio_path.name,
@@ -3916,27 +3984,43 @@ print(json.dumps({"changed": changed, "missing_added": missing, "backup": backup
             "device": self._resolve_record_device_locked(),
             "_started_epoch": time.time(),
         }
-        command = [
-            "arecord",
-            "-q",
-            "-D",
-            meta["device"],
-            "-f",
-            self.config.record_format,
-            "-r",
-            str(self.config.sample_rate),
-            "-c",
-            str(self.config.record_channels),
-            "-t",
-            "wav",
-            str(audio_path),
-        ]
-        process = subprocess.Popen(  # noqa: S603
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+        capture = None
+        if file_ext == "mp3":
+            arecord_cmd = [
+                "arecord", "-q", "-D", meta["device"],
+                "-f", self.config.record_format,
+                "-r", str(self.config.sample_rate),
+                "-c", str(self.config.record_channels),
+                "-t", "raw",
+            ]
+            ffmpeg_cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+                "-f", str(self.config.record_format).replace("_", "").lower(),
+                "-ar", str(self.config.sample_rate),
+                "-ac", str(self.config.record_channels),
+                "-i", "pipe:0",
+                "-vn", "-acodec", "libmp3lame", "-b:a", "128k",
+                "-y", str(audio_path),
+            ]
+            capture = subprocess.Popen(arecord_cmd, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE)
+            process = subprocess.Popen(ffmpeg_cmd, stdin=capture.stdout,
+                                       stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.PIPE, text=True)
+            if capture.stdout is not None:
+                capture.stdout.close()
+        else:
+            command = [
+                "arecord", "-q", "-D", meta["device"],
+                "-f", self.config.record_format,
+                "-r", str(self.config.sample_rate),
+                "-c", str(self.config.record_channels),
+                "-t", "wav", str(audio_path),
+            ]
+            process = subprocess.Popen(  # noqa: S603
+                command, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE, text=True,
+            )
         time.sleep(0.25)
         if process.poll() is not None:
             stderr = ""
@@ -3948,6 +4032,7 @@ print(json.dumps({"changed": changed, "missing_added": missing, "backup": backup
                 f"Recording failed to start on ALSA device {meta['device']}. Check the I2S capture path."
                 + (f" Details: {stderr.strip()}" if stderr and stderr.strip() else "")
             )
+        self._recording_capture = capture
         self._recording_process = process
         self._recording_meta = meta
         self._write_recording_meta_locked(meta)
@@ -4010,6 +4095,12 @@ print(json.dumps({"changed": changed, "missing_added": missing, "backup": backup
             self._recording_meta = None
             return
         stderr = ""
+        capture = getattr(self, "_recording_capture", None)
+        if capture is not None and capture.poll() is None:
+            try:
+                capture.terminate()
+            except Exception:
+                pass
         if self._recording_process.poll() is None:
             self._recording_process.terminate()
             try:
@@ -4032,12 +4123,15 @@ print(json.dumps({"changed": changed, "missing_added": missing, "backup": backup
         finished_at = datetime.now()
         meta["finished_at"] = finished_at.isoformat(timespec="seconds")
         meta["duration_seconds"] = round(time.time() - float(meta["_started_epoch"]), 1)
-        trimmed = _trim_wav_leading_seconds(Path(meta["file_path"]), self.config.record_trim_leading_seconds)
-        if trimmed > 0:
-            meta["trimmed_leading_seconds"] = trimmed
-        actual_duration = _wav_duration_seconds(Path(meta["file_path"]))
-        if actual_duration is not None:
-            meta["duration_seconds"] = actual_duration
+        if Path(meta["file_path"]).suffix.lower() == ".mp3":
+            meta["duration_seconds"] = round(time.time() - float(meta["_started_epoch"]), 1)
+        else:
+            trimmed = _trim_wav_leading_seconds(Path(meta["file_path"]), self.config.record_trim_leading_seconds)
+            if trimmed > 0:
+                meta["trimmed_leading_seconds"] = trimmed
+            actual_duration = _wav_duration_seconds(Path(meta["file_path"]))
+            if actual_duration is not None:
+                meta["duration_seconds"] = actual_duration
         if stderr:
             meta["note"] = stderr
         self._write_recording_meta_locked(meta)
@@ -4048,10 +4142,60 @@ print(json.dumps({"changed": changed, "missing_added": missing, "backup": backup
         meta_path = self.config.recordings_dir / str(meta["meta_name"])
         meta_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    def tune_fm(self, frequency_mhz: float) -> Dict[str, Any]:
+        """Manually tune an FM frequency (87.5-108 MHz)."""
+        freq_khz = int(round(float(frequency_mhz) * 1000))
+        if not (87500 <= freq_khz <= 108000):
+            raise ValueError("FM frequency must be between 87.5 and 108 MHz.")
+        station = {
+            "station_id": f"fm:{freq_khz}",
+            "label": f"FM {freq_khz / 1000:.1f}",
+            "band": "fm",
+            "mode": "fmhd",
+            "freq_khz": freq_khz,
+            "hd_available": False,
+            "favorite": False,
+        }
+        with self._lock:
+            if self._current_mode != "fmhd":
+                self._set_mode_locked("fmhd")
+            self._boot_locked(force=False)
+            self._play_analog_locked(station)
+            self._last_error = None
+            self._save_runtime_state_locked()
+            return self._status_payload_locked(refresh_signal=True)
+
+    def delete_recording(self, file_name: str) -> Dict[str, Any]:
+        """Delete a saved recording (audio file + .json sidecar)."""
+        safe = Path(file_name).name
+        if safe in ("", ".", ".."):
+            return {"ok": False, "error": "Invalid file name."}
+        audio = self.config.recordings_dir / safe
+        if not audio.exists() or audio.suffix.lower() not in (".wav", ".mp3"):
+            return {"ok": False, "error": "Recording not found."}
+        active = (
+            self._recording_meta is not None
+            and self._recording_meta.get("file_name") == safe
+            and self._recording_active_locked()
+        )
+        if active:
+            return {"ok": False, "error": "Cannot delete an active recording."}
+        try:
+            audio.unlink()
+        except OSError as exc:
+            return {"ok": False, "error": f"Could not delete: {exc}"}
+        meta = audio.with_suffix(".json")
+        if meta.exists():
+            try:
+                meta.unlink()
+            except OSError:
+                pass
+        return {"ok": True, "deleted": safe}
+
     def _list_recordings_locked(self) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
         self.config.recordings_dir.mkdir(parents=True, exist_ok=True)
-        for audio_path in sorted(self.config.recordings_dir.glob("*.wav"), key=lambda p: p.stat().st_mtime, reverse=True):
+        for audio_path in sorted(list(self.config.recordings_dir.glob("*.wav")) + list(self.config.recordings_dir.glob("*.mp3")), key=lambda p: p.stat().st_mtime, reverse=True):
             meta_path = audio_path.with_suffix(".json")
             info: Dict[str, Any]
             if meta_path.exists():

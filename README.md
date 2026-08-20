@@ -1,584 +1,135 @@
-# Raspiaudio Digital Radio for Raspberry Pi
+# Digital Radio for Raspberry Pi (DAB+ / FM + RDS)
 
-Youtube video presentation :
-[![Watch the video](https://img.youtube.com/vi/ORMRDO0aOpA/hqdefault.jpg)](https://youtu.be/ORMRDO0aOpA)
-![Raspiaudio Web UI](pic/webui.png)
+**DAB+ and FM receiver** for the Raspberry Pi with the **uGreen (Si4689)** board:
+full web UI, **correctly decoded RDS**, MP3/WAV recording, FM scan with real station
+names, manual FM tuning and automatic start at boot.
 
-Add this shield to a Raspberry Pi Zero, 4 or 5 to install a fully local FM, DAB, AM and HD Radio (United States) receiver in minutes, listen without internet, record audio, and control everything from a polished web UI on your local network.
+An improved fork of [RASPIAUDIOadmin/Digital-Radio-for-Raspberry-Pi](https://github.com/RASPIAUDIOadmin/Digital-Radio-for-Raspberry-Pi),
+adapted and fixed for the uGreen DAB/FM board.
 
-The Raspiaudio Digital Radio Shield for Raspberry Pi is a compact all-in-one radio board that brings AM, FM, DAB, DAB+, and HD Radio support to Raspberry Pi boards with a 40-pin header. It combines a local Web UI, CLI control, analog audio output, I2S digital audio, a built-in 1 x 5 W amplifier, a switchable onboard speaker output, and an onboard 3-way navigation control with up, down, and push actions for standalone menu-based projects.
+---
 
-*HD Radio is subject to licensing. Please verify that you are legally allowed to use it in your country and for your intended application.*
+## Features
 
-<p align="center">
-  <img src="pic/Digital%20radio%20Pi%20Raspiaudio%20front.png" alt="Raspiaudio digital radio front" width="46%" />
-  <img src="pic/Digital%20radio%20Pi%20Raspiaudio%20back.png" alt="Raspiaudio digital radio back" width="46%" />
-</p>
+- **DAB+**: scan, 150+ stations, labels decoded in **EBU Latin** (correct names:
+  "Radio Libertà", "#RTL102.5 napulè"...), live **DLS** artist/title, firmware **6.0.9** tested
+- **FM**: scan with the **real RDS station names**, full **RadioText**, **PI**, **PTY**
+- **RDS decoded at the root** (no heuristics): PS segment = block B bits 1-0,
+  RT segment = block B low nibble, **BLER** filtering of corrupted blocks
+- **Manual FM tuning**: type a frequency (87.5–108 MHz) right from the web UI
+- **MP3 or WAV recording** named `YYYYMMDD-HHMMSS_<mode>_<station>.mp3`
+  with **delete** from the web UI
+- **Simultaneous listening + recording** thanks to the shared ALSA device (`dabdsnoop`)
+- Web UI: **DAB and FM only** (no HD/AM), per-mode metadata panel
+  (DAB → artist/title/live text; FM → RT/PI/PTY), 4-column station layout
+- **One-command installation** (`install.sh`) on a fresh Raspberry Pi OS
+- **Autostart at boot** (systemd service)
 
-<p align="center">
-  <img src="pic/Digital%20radio%20Pi%20Raspiaudio%20situation.png" alt="Raspiaudio digital radio in use" width="68%" />
-</p>
+## Hardware requirements
 
-The focus is simple:
-- no internet required to listen to radio
-- resilient local control
-- browser-based Web UI for daily use
-- CLI access for automation, scripting, and custom applications
+- Raspberry Pi 3/4/5 with Raspberry Pi OS (bookworm or newer)
+- **uGreen DAB/FM board** (Si4689), RST on GPIO 23
+  *(original raspiaudio shield: RST on GPIO 25 and overlay `adau7002-simple`)*
+- FM/DAB antenna connected
 
-The whole project is open source:
-- GitHub: [RASPIAUDIOadmin/Digital-Radio-for-Raspberry-Pi](https://github.com/RASPIAUDIOadmin/Digital-Radio-for-Raspberry-Pi)
-- Product: [Raspiaudio Digital Radio Shield for Raspberry Pi](https://raspiaudio.com/product/digital-radio/)
-<li><a href="https://raspiaudio.com/product/digital-radio/" target="_blank" rel="noopener">Store </a></li>
-
-## Software release v1.5.3
-
-This release improves HD Radio subchannel discovery after field feedback from US testing.
-
-`FM / HD` still scans analog FM carriers first and then probes the detected FM frequencies for HD Radio. During long scans the Web UI shows backend-driven progress such as `FM 144/206 | 31 found` and `HD probe 20/45 | FM 45 found | HD 0`, so the scan should not look stuck while HD probing continues.
-
-New in `v1.5.3`: the scan no longer relies only on the SI4689 `audio_program_available` mask to discover subchannels. For every HD carrier that locks, the backend explicitly probes `HD1`, `HD2`, `HD3`, and `HD4` with `START_DIGITAL_SERVICE(0, program_id)`. This should expose extra entries such as `HD2` and `HD3` even when the first status reply only advertises `HD1`.
-
-Selecting a subchannel also verifies that the SI4689 reports the requested program as playing before accepting the tune. This avoids showing an `HD2` entry while the chip is still playing `HD1`.
-
-When the broadcaster provides the data, the backend reads HD Radio station info and PSD metadata such as station name, title, artist, album, genre, and available programs. HD subchannels are exposed as selectable entries like `HD1`, `HD2`, and `HD3`, and the UI labels the active HD program instead of treating the whole frequency as a single station.
-
-Media artwork support has also started: the backend now reuses the existing DAB artwork path when the SI4689 returns recognizable image payloads for HD Radio. This is best effort for now and depends on what each station broadcasts.
-
-If SPI is not enabled, the Web UI can now propose to add `dtparam=spi=on` to `/boot/firmware/config.txt` after confirmation. Reboot the Raspberry Pi after using this helper so `/dev/spidev0.*` appears.
-
-If HD Radio subchannels still do not appear in your area, run the server with logs and share the scan output so we can compare the SI4689 status during each HD program probe.
-
-## Quickstart
-
-Because we understand that you might be busy with your job or family, here is how to have instant fun.
-
-Clone the project:
+## Quick install
 
 ```bash
-git clone https://github.com/RASPIAUDIOadmin/Digital-Radio-for-Raspberry-Pi.git
-cd Digital-Radio-for-Raspberry-Pi
-```
-
-Start the local radio server:
-
-```bash
-sudo python3 radio.py serve --port 8686
-```
-
-Then open:
-
-```text
-http://piradio.local:8686/
-```
-
-If SPI is not active yet, the Web UI shows an `Enable SPI` prompt. Confirm it, reboot the Raspberry Pi when requested, then start the server again.
-
-Use `sudo` so the backend can access Raspberry Pi hardware and, when needed, update the boot config for SPI or I2S setup.
-
-If you are already on the Raspberry Pi, this is enough to get the Web UI and the CLI backend running.
-
-## Manual SPI setup
-
-The Web UI can enable SPI automatically. Use this manual method only if you prefer to configure the Raspberry Pi yourself, or if the automatic helper cannot update the boot config.
-
-```bash
-sudo raspi-config
-```
-
-Then select:
-
-```text
-Interface Options -> SPI -> Enable
-```
-
-Reboot and check that SPI devices exist:
-
-```bash
+unzip digital-radio-pkg.zip
+cd digital-radio-pkg
+sudo ./install.sh
 sudo reboot
-ls /dev/spidev*
 ```
 
-You should see `/dev/spidev0.0` and `/dev/spidev0.1`.
+After the reboot open `http://<ip-of-the-pi>:8686`, pick **DAB** or **FM** and press
+**Scan stations**.
 
-## Main features
+The package also ships `uninstall.sh` and a full `README.md` with the configuration
+options (`RST_PIN`, `OVERLAY`, `PORT`, `RECORD_FORMAT`).
 
-- DAB / DAB+
-- FM
-- HD Radio
-- AM
-- AM HD
-- local Web UI to scan, browse, tune, change volume, manage favorites, and handle recordings
-- selectable audio output from the Web UI: analog output on the shield or direct browser playback
-- CLI to control the backend from the terminal or integrate the radio into your own software
-- direct HTTP stream URLs for VLC, a browser, Music Assistant, or any compatible network player
-- analog audio output on the shield
-- I2S audio path for digital capture and recording
-- built-in `1 x 5 W` amplifier
-- switchable onboard speaker output
-- onboard 3-way navigation button: up, down, and push
-- audio jack output
-- screwless passive speaker output for an external speaker
-  - `4 ohm` recommended
-  - `8 ohm` supported
-- SMA antenna connector for the included antenna or a different external antenna
-- AM antenna balun for impedance matching
-- AM loop antenna connection support
-- amplifier enable on `GPIO17`
-- local recordings list in the browser
+---
 
-## Why this project
+## What we changed
 
-Unlike an internet radio product, this setup does not depend on network streaming to play stations.
+Every change was developed and **verified empirically on the real hardware**
+(uGreen board + Raspberry Pi).
 
-That makes it useful when you want:
-- a radio that still works without internet access
-- direct access to terrestrial broadcast bands
-- a local control API you can reuse in your own program
-- a Raspberry Pi based platform that is easy to extend
+### RDS decoding (the main work)
 
-## Web UI first
+| Before | After |
+|---|---|
+| Rotated/garbled PS ("LOMBD.", "RTL1 .5") | **Correct, stable PS**: "RADIO 24", "RTL102.5", "LOMBARD.", "\*Radio2" |
+| Mixed-up RT ("(2009) \*ORRESANGICeluono") | **Clean RT**: "GIGI D'ALESSIO - MEZZE VERITA'", "PAOLA & CHIARA - FESTA TOTALE" |
+| — | **PI** and **PTY** (with type name) shown in the UI |
 
-The recommended workflow is the local Web UI.
+How: the Si4689 chip already reports RDS characters as plain ASCII bytes in the
+blocks (no 6-bit table needed). The segment field was in the wrong place:
 
-It gives you:
-- source mode selection
-- audio output selection between `Analog output` and `Browser output`
-- station scan
-- station selection
-- favorites
-- amplifier on / off
-- volume control
-- recording controls
-- recordings browser
-- a simple radio workflow directly from a browser on the local network
+1. **PS segment = block B bits 1-0** (verified on 120 samples: the "RT"/"L1"/"02"/".5"
+   pairs are placed by `B & 0x3` → "RTL102.5")
+2. **RT segment = block B low nibble** (`B & 0xF`; the initial block-C hypothesis
+   was a coincidence on a single station)
+3. **BLER filter** on corrupted blocks — official kernel mapping:
+   A=bits 7-6, B=bits 5-4, C=bits 3-2, D=bits 1-0 (our first version was inverted
+   and let ~1 character in 40 through corrupted)
+4. **RadioText reset on text change** (stale segments used to stay mixed in) and
+   **padding stop** (all-space segments)
 
-Start the server on the Raspberry Pi:
+### FM scan with real names
+
+- During the scan every found station stays tuned ~2.5 s to capture its RDS PS →
+  the list shows "CAPITAL", "DEEJAY", "MileniuM", "RADIO 24"...
+- Plus BLER filtering and a full dwell for a stable name
+
+### Recording and audio
+
+- **MP3 recording** (`--record-format mp3`, pipeline `arecord | ffmpeg libmp3lame 128k`)
+  in addition to WAV
+- **Shared ALSA device `dabdsnoop`** (`/etc/asound.conf`, dsnoop S16_LE 48 kHz):
+  without it, simultaneous listening and recording failed ("Device or resource busy");
+  S16_LE is mandatory on the uGreen (the automatic dsnoop in S32_LE yields no data)
+- **Recording deletion** from the web UI (`DELETE /api/recordings/...`)
+
+### Web UI
+
+- Simplified modes: **DAB and FM only** (HD and AM removed)
+- Per-mode metadata panel: DAB → Artist/Title/Live text; FM → **RT, PI, PTY**
+- **Manual FM tune** (frequency input + Tune button, visible in FM mode only)
+- Artwork with full text (the PS used to be truncated to 4 characters),
+  4-column station layout, 3-column recordings
+- English labels, fixed alignments and spacing
+
+### uGreen platform
+
+- `--rst-pin 23` (the raspiaudio shield default of 25 does not reset the uGreen)
+- `ugreen-dabboard` overlay in `config.txt`
+- Firmware **DAB 6.0.9** (tested; `rom00_patch.016` identical across boards)
+
+### Autostart and distribution
+
+- **systemd service** `raspiaudio-radio.service` with the correct command,
+  enabled at boot (the "Start server automatically" switch in the UI shows active)
+- The old dabradio project removed from autostart
+- **Installation package** with an automated `install.sh`, tested on a wiped
+  Raspberry Pi: packages, config.txt (SPI/I2S/overlay), asound.conf, project at
+  `/opt/digital-radio`, service enabled
+
+---
+
+## Useful commands
 
 ```bash
-sudo python3 radio.py serve --port 8686
+# manual start (without systemd)
+python3 radio.py serve --port 8686 --rst-pin 23 --i2s-master \
+  --record-device dabdsnoop --record-format mp3
+
+# service
+sudo systemctl status raspiaudio-radio
+sudo systemctl restart raspiaudio-radio
 ```
 
-Then open:
-
-```text
-http://piradio.local:8686/
-```
-
-## I2S recording on Raspberry Pi
-
-If you want recording from the SI4689 I2S output, enable the Raspberry Pi capture overlay in `/boot/firmware/config.txt`:
-
-```ini
-dtparam=i2s=on
-dtoverlay=adau7002-simple,card-name=si4689_i2s
-```
-
-Then reboot the Raspberry Pi.
-
-After reboot, you should see the capture card with:
-
-```bash
-arecord -l
-```
-
-Expected result:
-
-```text
-card 2: si4689i2s [si4689_i2s], device 0: ...
-```
-
-The server now auto-detects this ALSA capture device for recordings, so the normal command stays:
-
-```bash
-sudo python3 radio.py serve --port 8686
-```
-
-The default backend uses the Raspberry Pi as the I2S clock master and the SI4689 as I2S slave, which matches the Skyworks SDK example and the `adau7002-simple` capture overlay.
-
-By default, the backend also trims the first `3` seconds of each WAV recording to remove the unstable I2S startup noise.
-
-If needed, you can still force a device manually:
-
-```bash
-sudo python3 radio.py serve --port 8686 --record-device plughw:CARD=si4689i2s,DEV=0
-```
-
-If your hardware is wired for the opposite clock direction, you can override it:
-
-```bash
-sudo python3 radio.py serve --port 8686 --i2s-master
-```
-
-If you want to keep the full raw capture without trimming the first seconds:
-
-```bash
-sudo python3 radio.py serve --port 8686 --record-trim-seconds 0
-```
-
-## Play through an Audio+ or MIC+ I2S output
-
-For stereo output through another Raspberry Pi I2S audio HAT such as Audio+ or
-MIC+, use the combined `raspiaudio-digital-radio-i2s-output` profile. Do not
-stack a separate radio capture overlay and a separate DAC overlay on the same
-I2S pins.
-
-See [README_AUDIO_PLUS_MIC_PLUS_I2S.md](README_AUDIO_PLUS_MIC_PLUS_I2S.md) for
-the full setup using the native ALSA `alsaloop` route.
-
-## Stream URLs and Music Assistant integration
-
-The server can expose the shield as a live radio source for Music Assistant, VLC, a browser, or any player that can open an HTTP audio stream.
-
-### Browser Output mode
-
-The Web UI has two listening modes at the top of the page:
-
-- `Analog output`
-  plays audio through the shield DAC, jack output, and onboard amplifier.
-- `Browser output`
-  plays the currently tuned station directly in the web browser on the local network.
-
-Browser Output uses `/audio/live.wav`, a direct PCM WAV stream captured from the SI4689 I2S output through the Raspberry Pi ALSA capture device. It avoids MP3 compression, so it is the recommended mode for best quality on a local network.
-
-The blue volume slider is shared by both outputs. It controls the SI4689 analog volume and the browser player volume, so there is only one volume control in the Web UI.
-
-Browser Output requires the I2S capture overlay described in [I2S recording on Raspberry Pi](#i2s-recording-on-raspberry-pi). If the Web UI does not detect the `si4689_i2s` capture device, it shows an installation prompt. After confirmation, the server can add the required lines to `/boot/firmware/config.txt`, enable the system service at boot, and ask you to reboot.
-
-This helper requires the server to be started with `sudo`:
-
-```bash
-sudo python3 radio.py serve --port 8686
-```
-
-The `Start with the system` toggle can create `/etc/systemd/system/raspiaudio-radio.service`
-automatically if it is missing, then enable it for the next boot. This also requires
-the server to be running with `sudo`, because writing to `/etc/systemd/system` and
-running `systemctl daemon-reload` need administrator privileges.
-
-Stream URLs require the SI4689 I2S audio capture device to be installed on the Raspberry Pi.
-The Web UI browser output uses direct PCM WAV from `si4689_i2s` through ALSA, with no MP3 compression.
-MP3 endpoints remain available for external players that need compressed audio or ICY metadata.
-Install the I2S overlay described in [I2S recording on Raspberry Pi](#i2s-recording-on-raspberry-pi) before using `/audio/live.wav`, `/audio/live.mp3`, station stream URLs, or generated playlists.
-
-The important endpoints are:
-
-```text
-http://piradio.local:8686/audio/live.mp3
-http://piradio.local:8686/audio/live.mp3?icy=1
-http://piradio.local:8686/audio/live.wav
-http://piradio.local:8686/audio/stations/<station_id>.mp3
-http://piradio.local:8686/stream.wav?station_id=<station_id>
-http://piradio.local:8686/api/station-streams?mode=dab
-http://piradio.local:8686/playlists/dab.m3u
-http://piradio.local:8686/playlists/dab.m3u?format=wav
-http://piradio.local:8686/playlists/favorites.m3u
-http://piradio.local:8686/api/live-metadata
-```
-
-How it works:
-
-- `/audio/live.mp3`
-  streams the currently tuned station
-- `/audio/live.mp3?icy=1`
-  streams the currently tuned station with forced ICY metadata for compatible players
-- `/audio/live.wav`
-  streams the currently tuned station as direct PCM WAV, recommended for browser output on a local network
-- `/audio/stations/<station_id>.mp3`
-  retunes the hardware to the requested station and streams it
-- `/stream.wav?station_id=<station_id>`
-  retunes the hardware to the requested station and streams direct WAV from the I2S capture device
-- `/api/station-streams?mode=dab`
-  returns the available DAB stations with MP3 and WAV stream URLs
-- `/playlists/dab.m3u`
-  exports all DAB stations as an MP3 playlist with ICY metadata
-- `/playlists/dab.m3u?format=wav`
-  exports all DAB stations as a direct WAV playlist, recommended for Music Assistant when reliability matters more than ICY metadata
-- `/playlists/favorites.m3u`
-  exports only favorites
-- `/api/live-metadata`
-  returns the current DAB now-playing text and artwork URL as JSON
-
-### Use your usual player instead of the Web UI
-
-You do not have to use the Raspiaudio Web UI if you prefer your usual player.
-
-For a quick test, paste the live stream URL directly into a browser:
-
-```text
-http://piradio.local:8686/audio/live.wav
-```
-
-For a station browser, open the generated DAB playlist in VLC with `Media` -> `Open Network Stream`:
-
-```text
-http://piradio.local:8686/playlists/dab.m3u
-```
-
-If your network does not resolve `piradio.local`, use the Raspberry Pi IP address instead, for example:
-
-```text
-http://192.168.1.154:8686/playlists/dab.m3u
-```
-
-VLC will display the stations from the playlist. Selecting another item retunes the Raspberry Pi service to that station, so you can switch between DAB stations from VLC without opening the Web UI.
-Generated playlists use metadata-enabled station URLs automatically.
-
-<p align="center">
-  <img src="pic/vlc.png" alt="Open the Raspiaudio DAB playlist URL in VLC and browse stations" width="72%" />
-</p>
-
-Important limitation:
-
-- the shield is a single hardware tuner
-- starting a different station retunes the hardware for everyone
-
-### Add the live source to Music Assistant
-
-The simplest approach is to add the generated WAV playlist to the Builtin provider in Music Assistant.
-
-```text
-http://piradio.local:8686/playlists/dab.m3u?format=wav
-```
-
-The WAV playlist uses direct I2S capture and the server keeps only one active stream at a time, which avoids unstable concurrent probes from Music Assistant retuning the single SI4689 tuner while another capture process is still running.
-
-If you prefer MP3 and ICY metadata, import the MP3 playlist instead:
-
-```text
-http://piradio.local:8686/playlists/dab.m3u
-```
-
-You can also add a single station URL manually.
-
-For example:
-
-```text
-http://piradio.local:8686/audio/stations/dab%3A0000f21b%3A00000001%3A195936.mp3
-```
-
-Once imported, Music Assistant can redistribute that terrestrial radio source to all supported players on the network.
-
-### Live metadata in the MP3 stream
-
-When a client requests ICY metadata, or when the URL includes `?icy=1`, the live stream injects:
-
-- station name in the ICY headers
-- current DAB text as `StreamTitle`
-- artist/title fields when they can be parsed from DAB DLS text
-- current DAB artwork URL as `StreamUrl` and `StreamArtwork` when the multiplex provides MOT artwork
-
-This works especially well with Music Assistant because it reads ICY `StreamTitle` from radio streams and can surface the current song in the UI and on compatible players.
-
-Note:
-
-- a plain browser MP3 request usually does not request ICY metadata, so it may play audio without showing title or artwork
-- the generated M3U playlists include `?icy=1` station URLs for metadata-capable players
-- Music Assistant reliably consumes `StreamTitle`
-- artwork is exposed as a URL, not embedded as binary image data inside the MP3 stream
-- artwork handling depends on the downstream client and current Music Assistant support for the source type
-
-Example:
-
-```text
-StreamTitle='THE WEEKND - In Your Eyes';
-StreamUrl='http://piradio.local:8686/api/dab/artwork?ts=...';
-StreamArtwork='http://piradio.local:8686/api/dab/artwork?ts=...';
-```
-
-## CLI mode
-
-The CLI uses the same backend as the Web UI.
-
-That means you can control the radio manually from the terminal, or use the commands as a base for your own scripts and applications.
-
-### Simple interactive CLI workflow
-
-Open a first terminal on the Raspberry Pi and start the local backend:
-
-```bash
-sudo python3 radio.py serve --port 8686
-```
-
-Then keep a second terminal open and send commands interactively, one by one:
-
-```bash
-python radio.py status
-python radio.py stations --mode dab
-python radio.py play 0
-python radio.py volume 31
-python radio.py volume +2
-python radio.py amp on
-python radio.py record start
-python radio.py record stop
-python radio.py recordings
-```
-
-Useful examples:
-
-```bash
-python radio.py boot --mode dab
-python radio.py scan --mode fm
-python radio.py stations --mode fm
-python radio.py play AIRZEN RADIO
-python radio.py play dab:0000f204:00000009:199360
-python radio.py favorite 0
-```
-
-To see all available commands:
-
-```bash
-python radio.py --help
-```
-
-## Repository layout
-
-- `radio.py`
-  entry point for the CLI
-- `raspiaudio_radio/`
-  shared backend, HTTP server, and Web UI
-- `firmwares/`
-  firmware and patch files used by the radio backend
-- `legacy/`
-  older low-level scripts kept for reference
-
-## Current backend scope
-
-The current radio backend is intentionally kept simple:
-- SPI control
-- local firmware host-load
-- Web UI + CLI on the same backend
-- station playback
-- favorites
-- local browser control
-- I2S recording workflow
-
-## Flash boot notes
-
-Boot from external flash is now validated on the Raspberry Pi with the SI4689.
-
-In practice, flash boot is especially interesting when the host talks to the tuner over a slower control link such as I2C. With fast SPI host-load, the gain is smaller, because SPI host-load is already quite fast. With I2C, flash boot should save much more startup time.
-
-Validated flash programming sequence:
-- host-load `rom00_patch.016.bin`
-- erase chip with `0x05 0xFF 0xDE 0xC0`
-- write flash using `FLASH_WRITE_BLOCK` `0x05 0xF0 0x0C 0xED ...`
-
-Validated flash boot sequence:
-- host-load `rom00_patch_mini.003.bin`
-- send `LOAD_INIT`
-- `FLASH_LOAD` the full patch from `0x00004000`
-- send `LOAD_INIT`
-- `FLASH_LOAD` the DAB firmware from `0x00092000`
-- send `BOOT`
-
-Program the external flash from the normal CLI:
-
-```bash
-python radio.py flash dab
-```
-
-Start the web server by booting the firmware from flash:
-
-```bash
-sudo python3 radio.py serve --port 8686 --boot-source flash
-```
-
-You can also ask the server to try flash first and fall back to normal SPI host-load if flash boot fails:
-
-```bash
-sudo python3 radio.py serve --port 8686 --boot-source auto
-```
-
-Validation method:
-- tune to DAB multiplex `199360 kHz`
-- wait for `acq=true` and `valid=true`
-- confirm that the service list is readable after boot
-
-Benchmark measured on the Raspberry Pi on DAB `199360 kHz`, from reset to a valid DAB lock (`acq=true`, `valid=true`):
-
-| Control speed | Host-load over SPI | Flash boot mini | Flash boot full |
-| --- | ---: | ---: | ---: |
-| `30 MHz` | `2.37 s` | `1.14 s` | `2.40 s` |
-| `1 MHz` | `7.10 s` | `1.07 s` | `1.00 s` |
-| `500 kHz` | `12.57 s` | `1.16 s` | `0.99 s` |
-
-So, with the default fast SPI setup, host-load is already usable. The flash path becomes much more compelling when the host side is intentionally slowed down for debug, or when using a slower control interface such as I2C.
-
-## Hardware notes
-
-Current shield-oriented defaults:
-- `RSTB = BCM25`
-- `AMP_EN = BCM17`
-- `SPI bus/device = 0/0`
-- local firmware files loaded from `firmwares/`
-- onboard navigation input with `up / down / push`
-- onboard speaker output with dedicated on / off control
-- SMA antenna connector
-- AM impedance-matching balun
-- passive speaker connector
-
-## Dependencies
-
-On Raspberry Pi OS:
-
-Raspberry Pi Zero / 3 / 4:
-
-```bash
-sudo apt install python3-spidev python3-rpi.gpio python3-smbus2 alsa-utils ffmpeg
-```
-
-Raspberry Pi 5:
-
-```bash
-sudo apt install python3-spidev python3-rpi-lgpio python3-smbus2 alsa-utils ffmpeg
-```
-
-`python3-rpi-lgpio` provides the same `RPi.GPIO` Python import used by the code, but supports the newer Raspberry Pi 5 GPIO controller.
-
-## Open source and reusable
-
-This repository is not only a radio player.
-
-It is also a base to:
-- build your own radio application
-- integrate the SI4689 shield into a custom Raspberry Pi project
-- create your own UI on top of the CLI or HTTP backend
-- experiment with local digital radio features without depending on cloud services
-
-## Inputs / Outputs
-
-### Raspberry Pi header pinout
-
-The default software controls the SI4689 radio chip over `SPI0`. The `SDA` and
-`SCL` pins are present on the Raspberry Pi header, but they are not used by the
-default SPI radio control path.
-
-| Function | Raspberry Pi signal | Header pin | Direction / notes |
-| --- | --- | --- | --- |
-| `5V` power | `5V` | `2`, `4` | Raspberry Pi to shield |
-| `GND` | `GND` | `6`, `9`, `14`, `20`, `25`, `30`, `34`, `39` | Ground |
-| SPI MOSI | `GPIO10` / `MOSI` | `19` | Raspberry Pi to SI4689 |
-| SPI MISO | `GPIO9` / `MISO` | `21` | SI4689 to Raspberry Pi |
-| SPI clock | `GPIO11` / `SCLK` | `23` | Raspberry Pi to SI4689 |
-| SPI chip select | `GPIO8` / `CE0` / `SSBSI` | `24` | Raspberry Pi to SI4689 |
-| Radio interrupt | `GPIO23` / `INT` | `16` | SI4689 to Raspberry Pi |
-| Radio reset | `GPIO25` / `RST` | `22` | Raspberry Pi to SI4689 |
-| Amplifier enable | `GPIO17` / `ENABLE_AMPLI` | `11` | Raspberry Pi to onboard amplifier |
-| I2S bit clock | `GPIO18` / `BCK` | `12` | Raspberry Pi to SI4689 in the default I2S master setup |
-| I2S frame clock | `GPIO19` / `LRCK` | `35` | Raspberry Pi to SI4689 in the default I2S master setup |
-| I2S audio data | `GPIO20` / `DOUT` | `38` | SI4689 digital audio to Raspberry Pi |
-| Navigation clockwise | `GPIO5` / `CW` | `29` | Onboard navigation switch |
-| Navigation push | `GPIO6` / `PUSH` | `31` | Onboard navigation switch |
-| Navigation counter-clockwise | `GPIO13` / `CCW` | `33` | Onboard navigation switch |
-| Optional I2C SDA | `GPIO2` / `SDA` | `3` | Routed on the header, not used for default SPI control |
-| Optional I2C SCL | `GPIO3` / `SCL` | `5` | Routed on the header, not used for default SPI control |
-| HAT EEPROM data | `GPIO0` / `ID_SD` / `EEDATA` | `27` | Reserved for HAT identification EEPROM |
-| HAT EEPROM clock | `GPIO1` / `ID_SC` / `EECLK` | `28` | Reserved for HAT identification EEPROM |
-
-- RF and audio connections on the shield:
-  - `SMA` antenna connector
-  - AM loop antenna input
-  - AM impedance-matching balun
-  - audio jack output
-  - onboard speaker output with on / off switch
-  - passive external speaker output via screwless connector
+## Acknowledgements and license
+
+Based on [RASPIAUDIOadmin/Digital-Radio-for-Raspberry-Pi](https://github.com/RASPIAUDIOadmin/Digital-Radio-for-Raspberry-Pi)
+(no license declared in the original repository — all rights on the original code
+remain with its authors). The changes in this fork are for personal/hobby use.

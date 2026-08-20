@@ -234,6 +234,8 @@ def build_parser() -> argparse.ArgumentParser:
     serve.set_defaults(i2s_master=False)
     serve.add_argument("--sample-rate", type=int, default=48_000)
     serve.add_argument("--sample-size", type=int, default=16)
+    serve.add_argument("--record-format", choices=["wav", "mp3"], default="wav",
+                        help="Recording container format: wav or mp3 (default: wav)")
     serve.add_argument(
         "--record-trim-seconds",
         type=float,
@@ -349,6 +351,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             audio_out=args.audio_out,
             i2s_master=args.i2s_master,
             sample_rate=args.sample_rate,
+            record_file_format=args.record_format,
             sample_size=args.sample_size,
             record_trim_leading_seconds=args.record_trim_seconds,
             xtal_freq=args.xtal,

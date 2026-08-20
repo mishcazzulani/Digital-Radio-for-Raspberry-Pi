@@ -89,17 +89,25 @@
             <span id="mediaStatus" class="count-pill">Waiting</span>
           </div>
           <div class="media-copy">
-            <div class="media-line">
+            <div class="media-line" id="mediaLineArtist">
               <span class="meta-label">Artist</span>
               <strong id="mediaArtist">No artist yet</strong>
             </div>
-            <div class="media-line">
+            <div class="media-line" id="mediaLineTitle">
               <span class="meta-label">Title</span>
               <strong id="mediaTitle">No title yet</strong>
             </div>
-            <div class="media-line media-line-wide">
-              <span class="meta-label">Live text</span>
+            <div class="media-line media-line-wide" id="mediaLineText">
+              <span class="meta-label" id="mediaLabelText">Live text</span>
               <p id="mediaText">Tune a DAB or HD Radio station to read metadata.</p>
+            </div>
+            <div class="media-line" id="mediaLinePi">
+              <span class="meta-label" id="mediaLabelPi">RDS PI</span>
+              <strong id="mediaPi">—</strong>
+            </div>
+            <div class="media-line" id="mediaLinePty">
+              <span class="meta-label" id="mediaLabelPty">PTY</span>
+              <strong id="mediaPty">—</strong>
             </div>
           </div>
           <div class="status-line media-foot">
@@ -161,12 +169,8 @@
               <small>Digital Audio Broadcasting</small>
             </button>
             <button class="mode-card" data-mode="fmhd">
-              <span>FM / HD</span>
-              <small>FM with HD auto-detection</small>
-            </button>
-            <button class="mode-card" data-mode="amhd">
-              <span>AM / HD</span>
-              <small>AM with HD auto-detection</small>
+              <span>FM</span>
+              <small>FM radio</small>
             </button>
           </div>
         </section>
@@ -193,6 +197,10 @@
           <div class="station-toolbar">
             <input id="stationSearch" type="search" placeholder="Filter by station or frequency..." />
             <span id="scanMeta" class="toolbar-note">No scan yet</span>
+          </div>
+          <div id="manualTuneRow" class="manual-tune" style="display:none">
+            <input id="manualTuneInput" type="number" min="87.5" max="108" step="0.1" placeholder="FM frequency (MHz)" inputmode="decimal" />
+            <button id="manualTuneButton" class="btn" type="button">Tune</button>
           </div>
           <div id="scanProgress" class="scan-progress" hidden aria-live="polite">
             <div class="scan-progress-head">
@@ -275,7 +283,10 @@
             <strong class="recording-station"></strong>
             <span class="recording-meta"></span>
           </div>
-          <a class="recording-link" target="_blank" rel="noopener">Open</a>
+          <div class="recording-actions">
+            <a class="recording-link" target="_blank" rel="noopener">Open</a>
+            <button class="recording-delete" type="button">Delete</button>
+          </div>
         </div>
         <audio class="recording-player" controls preload="none"></audio>
       </article>
